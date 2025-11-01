@@ -899,13 +899,6 @@ def test_write_read():
     df_in = pd.read_excel(content)
     return df_in
 
-st.header("🔌 Test Google Drive")
-if st.button("Tester Google Drive"):
-    try:
-        st.dataframe(test_write_read())
-        st.success("Connexion Drive OK ✅ (test.xlsx créé/écrit/lu)")
-    except Exception as e:
-        st.error(f"Erreur Drive: {e}")
 
 
 
