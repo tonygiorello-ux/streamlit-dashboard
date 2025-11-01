@@ -12,32 +12,28 @@ from streamlit_option_menu import option_menu
 
 
 # ---------------------------------------------------------------------------
-# 🔌 Google Drive helpers
+# 🔌 Google Drive helpers (Service Account)
 # ---------------------------------------------------------------------------
-def connect_drive():
-    gauth = GoogleAuth()
-    # Si le fichier token existe déjà, il évite de redemander la connexion
-    if os.path.exists("mycreds.txt"):
-        gauth.LoadCredentialsFile("mycreds.txt")
-    else:
-        gauth.LocalWebserverAuth()
-        gauth.SaveCredentialsFile("mycreds.txt")
-    return GoogleDrive(gauth)
+def read_excel_from_drive(file_id: str):
+    """Lit un fichier Excel depuis Google Drive via un *compte de service*.
+    Nécessite les secrets Streamlit dans st.secrets["gcp_service_account"]
+    et que le fichier/dossier soit partagé avec l'email du compte de service.
+    """
+    drive = get_drive()
+    f = drive.CreateFile({"id": file_id})
+    content = io.BytesIO(f.GetContentBinary())
+    return pd.read_excel(content)
 
+def save_excel_to_drive(df: pd.DataFrame, file_id: str) -> None:
+    """Écrit un DataFrame dans un fichier Excel sur Google Drive (service account)."""
+    drive = get_drive()
+    bio = io.BytesIO()
+    df.to_excel(bio, index=False)
+    bio.seek(0)
+    f = drive.CreateFile({"id": file_id})
+    f.content = bio.getvalue()
+    f.Upload()
 
-def read_excel_from_drive(drive, file_id):
-    file = drive.CreateFile({"id": file_id})
-    file_content = io.BytesIO(file.GetContentBinary())
-    return pd.read_excel(file_content)
-
-
-def save_excel_to_drive(drive, df, file_id):
-    temp_path = "temp.xlsx"
-    df.to_excel(temp_path, index=False)
-    file = drive.CreateFile({"id": file_id})
-    file.SetContentFile(temp_path)
-    file.Upload()
-    os.remove(temp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -896,5 +892,7 @@ if st.button("Tester Google Drive"):
         st.success("Connexion Drive OK ✅ (test.xlsx créé/écrit/lu)")
     except Exception as e:
         st.error(f"Erreur Drive: {e}")
+
+
 
 
