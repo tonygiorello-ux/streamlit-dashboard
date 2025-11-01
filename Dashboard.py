@@ -390,13 +390,11 @@ if menu == "Dashboard":
                 unsafe_allow_html=True,
             )
             val = st.selectbox(
-                "",
-                options,
-                index=options.index(saved_ceo.get(axe))
-                if saved_ceo.get(axe) in options
-                else None,
-                key=f"axe_{axe}",
-            )
+    label="",
+    options=options,
+    key=f"axe_{axe}",
+    index=(options.index(saved_ceo.get(axe)) if saved_ceo.get(axe) in options else 0),
+)
             updated_ceo[axe] = val
 
     if updated_ceo != saved_ceo:
