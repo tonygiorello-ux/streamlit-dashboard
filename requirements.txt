@@ -3,3 +3,5 @@ pandas
 openpyxl
 pydrive2
 google-auth
+plotly
+streamlit-option-menu
