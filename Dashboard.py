@@ -246,7 +246,7 @@ if menu == "Dashboard":
             font_color="#0f172a",
             title_font_color="#2563eb",
             xaxis=dict(showgrid=False),
-            yaxis=dict(gridcolor="#e5e7eb"),
+            yaxis(dict(gridcolor="#e5e7eb")),
         )
         st.plotly_chart(fig, use_container_width=True)
     else:
@@ -401,14 +401,79 @@ if menu == "Dashboard":
         unsafe_allow_html=True,
     )
 
-    # Mandala & validation
+    # -----------------------------------------------------------------------
+    # 🌕 Mandala (PERSISTANT via Google Drive Service Account)
+    # -----------------------------------------------------------------------
     st.markdown("---")
     st.subheader("🌕 Mandala")
-    mandala_val = st.number_input(
-        "Progression du Mandala (1 à 40)", min_value=1, max_value=40, step=1, value=1
-    )
-    st.progress(mandala_val / 40)
 
+    # On isole une implémentation "service account" ici pour ne rien casser ailleurs
+    from pydrive2.auth import ServiceAccountCredentials
+
+    @st.cache_resource(show_spinner=False)
+    def _sa_drive():
+        sa = st.secrets["gcp_service_account"]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(
+            sa, scopes=["https://www.googleapis.com/auth/drive"]
+        )
+        return GoogleDrive(creds.CreateOAuth2())
+
+    def _parent_folder_id():
+        return st.secrets["gcp_service_account"].get("drive_parent_folder_id")
+
+    def _find_or_create_mandala_file():
+        drive = _sa_drive()
+        parent = _parent_folder_id()
+        if not parent:
+            raise RuntimeError("drive_parent_folder_id manquant dans st.secrets[gcp_service_account].")
+        q = f"title = 'mandala.json' and trashed = false and '{parent}' in parents"
+        results = drive.ListFile({"q": q}).GetList()
+        if results:
+            return results[0]
+        f = drive.CreateFile({
+            "title": "mandala.json",
+            "parents": [{"id": parent}],
+            "mimeType": "application/json",
+        })
+        f.SetContentString(json.dumps({"value": 1}, ensure_ascii=False))
+        f.Upload()
+        return f
+
+    def _load_mandala():
+        try:
+            f = _find_or_create_mandala_file()
+            data = json.loads(f.GetContentString())
+            return int(data.get("value", 1))
+        except Exception:
+            return 1
+
+    def _save_mandala(value: int):
+        try:
+            f = _find_or_create_mandala_file()
+            f.SetContentString(json.dumps({"value": int(value)}, ensure_ascii=False))
+            f.Upload()
+        except Exception as e:
+            st.warning(f"Impossible d’enregistrer le Mandala sur Drive : {e}")
+
+    # valeur par défaut depuis Drive (persistante)
+    if "mandala_val" not in st.session_state:
+        st.session_state.mandala_val = _load_mandala()
+
+    def _mandala_on_change():
+        _save_mandala(st.session_state.mandala_val)
+
+    st.number_input(
+        "Progression du Mandala (1 à 40)",
+        min_value=1, max_value=40, step=1,
+        value=int(st.session_state.mandala_val),
+        key="mandala_val",
+        on_change=_mandala_on_change,
+    )
+    st.progress(st.session_state.mandala_val / 40)
+
+    # -----------------------------------------------------------------------
+    # Validation de l'entrée
+    # -----------------------------------------------------------------------
     if st.button("➕ Ajouter l'entrée complète"):
         if choix:
             valeur = 1 if "✅" in choix else -1
@@ -898,10 +963,3 @@ def test_write_read():
     content = io.BytesIO(f.GetContentBinary())
     df_in = pd.read_excel(content)
     return df_in
-
-
-
-
-
-
-
