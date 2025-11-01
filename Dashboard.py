@@ -6,70 +6,39 @@ from datetime import datetime
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from pydrive2.auth import GoogleAuth
+from pydrive2.drive import GoogleDrive
 from streamlit_option_menu import option_menu
 
+
 # ---------------------------------------------------------------------------
-# 🔌 Google Drive helpers — Service Account via st.secrets
+# 🔌 Google Drive helpers
 # ---------------------------------------------------------------------------
-import tempfile
-from pydrive2.auth import ServiceAccountCredentials
-from pydrive2.drive import GoogleDrive
+def connect_drive():
+    gauth = GoogleAuth()
+    # Si le fichier token existe déjà, il évite de redemander la connexion
+    if os.path.exists("mycreds.txt"):
+        gauth.LoadCredentialsFile("mycreds.txt")
+    else:
+        gauth.LocalWebserverAuth()
+        gauth.SaveCredentialsFile("mycreds.txt")
+    return GoogleDrive(gauth)
 
-@st.cache_resource(show_spinner=False)
-def drive_client():
-    sa = st.secrets["gcp_service_account"]
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(
-        sa, scopes=["https://www.googleapis.com/auth/drive"]
-    )
-    return GoogleDrive(creds.CreateOAuth2())
 
-def _find_by_name(drive, name, parent_id):
-    q = [f"title = '{name}'", "trashed = false"]
-    if parent_id:
-        q.append(f"'{parent_id}' in parents")
-    res = drive.ListFile({"q": " and ".join(q)}).GetList()
-    return res[0] if res else None
+def read_excel_from_drive(drive, file_id):
+    file = drive.CreateFile({"id": file_id})
+    file_content = io.BytesIO(file.GetContentBinary())
+    return pd.read_excel(file_content)
 
-def read_excel_from_drive(name: str, parent_id: str | None = None) -> pd.DataFrame:
-    drive = drive_client()
-    f = _find_by_name(drive, name, parent_id)
-    if not f:
-        return pd.DataFrame()
-    content = io.BytesIO(f.GetContentBinary())
-    try:
-        return pd.read_excel(content)
-    except Exception:
-        return pd.DataFrame()
 
-def write_excel_to_drive(name: str, df: pd.DataFrame, parent_id: str | None = None) -> str:
-    drive = drive_client()
-    f = _find_by_name(drive, name, parent_id)
-    if not f:
-        meta = {
-            "title": name,
-            "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        }
-        if parent_id:
-            meta["parents"] = [{"id": parent_id}]
-        f = drive.CreateFile(meta)
+def save_excel_to_drive(drive, df, file_id):
+    temp_path = "temp.xlsx"
+    df.to_excel(temp_path, index=False)
+    file = drive.CreateFile({"id": file_id})
+    file.SetContentFile(temp_path)
+    file.Upload()
+    os.remove(temp_path)
 
-    # Écrit l'Excel dans un fichier temporaire puis upload (évite les erreurs d'encodage)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
-        tmp_path = tmp.name
-    try:
-        with pd.ExcelWriter(tmp_path, engine="openpyxl") as w:
-            df.to_excel(w, index=False, sheet_name="Feuille1")
-        f.SetContentFile(tmp_path)
-        f.Upload()
-        return f["id"]
-    finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
-
-# ID du dossier Drive où lire/écrire (provenant de .streamlit/secrets.toml)
-PARENT = st.secrets["gcp_service_account"].get("drive_parent_folder_id")
 
 # ---------------------------------------------------------------------------
 # 🧭 CONFIGURATION GLOBALE
@@ -169,7 +138,7 @@ div[data-baseweb="select"] > div, .stNumberInput input, .stTextArea textarea {
 .audit-card h4 { color:#2563eb; margin-bottom:10px; }
 .legend-card {
   background-color:#ffffff; border:1px solid #cfe0ff; border-radius:10px;
-  padding:20px; margin-top:15px; box-shadow:0 1px 8px rgba(0,0,0,0.12);
+  padding:20px; margin-top:15px; box-shadow:0 1px 8px rgba(37,99,235,0.12);
 }
 </style>
 """,
@@ -182,8 +151,11 @@ div[data-baseweb="select"] > div, .stNumberInput input, .stTextArea textarea {
 if menu == "Dashboard":
     st.markdown("## 🧾 Récapitulatif de la dernière session")
 
-    # 🔽 Lecture Drive
-    df_historique = read_excel_from_drive("discipline.xlsx", parent_id=PARENT)
+    EXCEL_FILE = "discipline.xlsx"
+    if os.path.exists(EXCEL_FILE):
+        df_historique = pd.read_excel(EXCEL_FILE)
+    else:
+        df_historique = pd.DataFrame()
 
     colonnes_attendues = [
         "Date",
@@ -218,7 +190,7 @@ if menu == "Dashboard":
         derniere_ligne = pd.Series({col: None for col in colonnes_attendues})
         montant_cumule = 0.0
 
-    # 🔹 Récap cartes
+    # 🔹 Récap en cartes (pas de st.metric pour éviter le doublon)
     st.markdown(
         f"""
         <div class="recap-grid">
@@ -279,7 +251,7 @@ if menu == "Dashboard":
     else:
         st.info("Aucune donnée pour le moment — ajoute une première entrée pour voir la courbe.")
 
-    # 🖼️ Capture d'écran de la dernière session (locale uniquement)
+    # 🖼️ Capture d'écran de la dernière session
     st.markdown("### 🖼️ Capture d'écran de la dernière session")
     last_capture = derniere_ligne.get("Capture")
     if last_capture and os.path.exists(last_capture):
@@ -291,7 +263,7 @@ if menu == "Dashboard":
     st.markdown("---")
     st.subheader("🧾 Nouvelle entrée de session")
 
-    # Upload capture (classement Année/Mois/Semaine/Jour) — local
+    # Upload capture (classement Année/Mois/Semaine/Jour)
     capture_file = st.file_uploader(
         "📸 Ajoute une capture d’écran de ta session",
         type=["png", "jpg", "jpeg"],
@@ -459,8 +431,7 @@ if menu == "Dashboard":
             st.session_state.discipline_data = pd.concat(
                 [st.session_state.discipline_data, nouvelle_entree], ignore_index=True
             )
-            # 🔼 Écriture Drive
-            write_excel_to_drive("discipline.xlsx", st.session_state.discipline_data, parent_id=PARENT)
+            st.session_state.discipline_data.to_excel(EXCEL_FILE, index=False)
             st.success("✅ Entrée enregistrée avec succès !")
             st.rerun()
         else:
@@ -634,10 +605,14 @@ elif menu == "Plan de Trading":
 elif menu == "Statistiques":
     st.markdown("## 📊 Analyse statistique des sessions")
 
-    # 🔽 Lecture Drive
-    df = read_excel_from_drive("discipline.xlsx", parent_id=PARENT)
-    if df.empty:
+    EXCEL_FILE = "discipline.xlsx"
+    if not os.path.exists(EXCEL_FILE):
         st.warning("Aucune donnée disponible.")
+        st.stop()
+
+    df = pd.read_excel(EXCEL_FILE)
+    if df.empty:
+        st.info("Aucune donnée enregistrée.")
         st.stop()
 
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
@@ -707,6 +682,7 @@ elif menu == "Statistiques":
     trendline_kw = {}
     try:
         import statsmodels.api as sm  # noqa: F401
+
         trendline_kw["trendline"] = "ols"
     except Exception:
         trendline_kw = {}
@@ -754,8 +730,10 @@ elif menu == "Statistiques":
     st.markdown("---")
     st.subheader("🗓️ Calendrier des gains / pertes")
 
-    df_filtered = read_excel_from_drive("discipline.xlsx", parent_id=PARENT)
-    if df_filtered.empty:
+    EXCEL_FILE = "discipline.xlsx"
+    if os.path.exists(EXCEL_FILE):
+        df_filtered = pd.read_excel(EXCEL_FILE)
+    else:
         df_filtered = pd.DataFrame(columns=["Date", "Montant"])
 
     if not df_filtered.empty and "Date" in df_filtered.columns and "Montant" in df_filtered.columns:
@@ -867,3 +845,56 @@ elif menu == "Statistiques":
             st.info("Aucune donnée disponible pour ce mois.")
     else:
         st.info("Aucune donnée à afficher dans le calendrier.")
+
+import io
+import pandas as pd
+import streamlit as st
+from pydrive2.auth import ServiceAccountCredentials
+from pydrive2.drive import GoogleDrive
+
+@st.cache_resource(show_spinner=False)
+def get_drive():
+    sa = st.secrets["gcp_service_account"]
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(
+        sa, scopes=["https://www.googleapis.com/auth/drive"]
+    )
+    return GoogleDrive(creds.CreateOAuth2())
+
+def _parent_folder_id():
+    return st.secrets["gcp_service_account"].get("drive_parent_folder_id")
+
+def test_write_read():
+    drive = get_drive()
+    parent = _parent_folder_id()
+
+    # 1) créer/écrire test.xlsx
+    df_out = pd.DataFrame({"ok": [1, 2, 3]})
+    bio = io.BytesIO()
+    df_out.to_excel(bio, index=False)
+    bio.seek(0)
+
+    # chercher le fichier par nom dans le dossier
+    q = f"title = 'test.xlsx' and trashed = false and '{parent}' in parents"
+    results = drive.ListFile({"q": q}).GetList()
+    f = results[0] if results else drive.CreateFile({
+        "title": "test.xlsx",
+        "parents": [{"id": parent}],
+        "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    })
+    f.content = bio.getvalue()
+    f.Upload()
+
+    # 2) relire test.xlsx
+    content = io.BytesIO(f.GetContentBinary())
+    df_in = pd.read_excel(content)
+    return df_in
+
+st.header("🔌 Test Google Drive")
+if st.button("Tester Google Drive"):
+    try:
+        st.dataframe(test_write_read())
+        st.success("Connexion Drive OK ✅ (test.xlsx créé/écrit/lu)")
+    except Exception as e:
+        st.error(f"Erreur Drive: {e}")
+
+
